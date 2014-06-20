@@ -1,0 +1,174 @@
+# Practical Machine Learning: Course project writeup 
+
+We will use the Human Activity Recognition data found at http://groupware.les.inf.puc-rio.br/har to build a prediction model. The goal will be to estimate the "classe" variable that describes how well an activity was performed.
+
+## Loading and preprocessing the data 
+
+**Step 1. Load the data.**  
+
+First we set the locale to English and seed to 1 to be able to reproduce the results.
+```{r initialize, echo=TRUE}
+Sys.setlocale("LC_ALL", "English")
+set.seed(1)
+```
+
+Lets start with loading the raw training and test data. Assumtion: they are already in the project folder. 
+```{r loadData, echo=TRUE}
+rawTrainingData <- read.csv(file = "pml-training.csv", 
+                   header = TRUE,
+                   sep = ",",
+                   row.names = NULL,
+                   na.strings = c("NA",""),
+                   stringsAsFactors = FALSE
+                   ) 
+
+rawTestData <- read.csv(file = "pml-testing.csv", 
+                   header = TRUE,
+                   sep = ",",
+                   row.names = NULL,
+                   na.strings = c("NA",""," "),
+                   stringsAsFactors = FALSE
+                   ) 
+```
+
+
+**Step 2. Process/transform the data into a format suitable for further analysis**
+
+As shown below we have made the follwoing steps to tidy the data set  
+
+1. all columns with NA values will be removed. Analysis has shown that there are either 0 or 19216 NAs values in particular columns. Because 19216 is nearly 100% of the size of the training data set we will remove those columns completely.  
+2. remove additionally the columns that don't seem to have any relationships to accelerator data: user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window, num_window . They could possibly predict very well data in the training data set, but would  probably fail to predict data in the test set (the relationship is rather artificial, real prediciton model shouldn't be build upon them).  
+3. Do the same (as in point 2) operation on test data set.  
+4. use the function nearZeroVar to show that the remaining columns shouldn't be automaticly removed.  
+
+```{r preProcess, echo=TRUE}
+# check if there are NAs
+countNAs <- apply(rawTrainingData,2,function(x) {sum(is.na(x))}) 
+# how many NAs are in particular columns(show only distinct values)
+unique(countNAs)
+
+
+#check length of the raw training data set
+length(rawTrainingData$classe)
+
+
+#Therefore we can remove the colums which have at least one NA
+rawTrainingData <- rawTrainingData[ , -which(names(rawTrainingData) %in% names(countNAs)[countNAs>0])]
+
+#remove additionally the columns that dont seem to have any relationships to accelerator data
+# user_name,raw_timestamp_part_1,raw_timestamp_part_2,cvtd_timestamp,new_window,num_window
+rawTrainingData <- rawTrainingData[ , -which(names(rawTrainingData) %in% c("user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "new_window", "num_window","X"))]
+
+#do the same on the test data set
+rawTestData <- rawTestData[ , -which(names(rawTestData) %in% names(countNAs)[countNAs>0])]
+rawTestData <- rawTestData[ , -which(names(rawTestData) %in% c("user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "new_window", "num_window","X"))] 
+
+#load the caret library
+library(caret)
+# We should not remove automatically any of the remaining columns, the nearZeroVar fuction showss it
+nsv <- nearZeroVar(rawTrainingData,saveMetrics=TRUE)
+nsv
+#no columns that should be removed
+nsvColumns <- rownames(nsv[nsv[,"zeroVar"] > 0, ])
+nsvColumns
+
+
+```
+
+We have now 53 variables (including classe). We will try to predict classe based on the other variables.  
+
+## Build the prediction model 
+
+Because of high memory usage and to test the final model before applying to the test set provided in this assignment we will take only a subset from the original data to build the prediction model. From the original 19622 samples a subset counting 15000 samples will be used choosen randomly from the training data set. We will then use it to perfomr cross validation of the model (4 fold). The rest of 4622 samples will serve as a validation set (build from the training set, put aside) to assess the expected out of sample error. Because we are trying to solve a categorization problem with a lot of variables, we will use the random forest approach.  
+
+
+```{r buildModel, echo=TRUE}
+# make model
+
+# Because of high memory usage we have to take only a subset from the original data to build the prediciton model.
+#take a random sample of size 15000
+trainingIndex <- sample(nrow(rawTrainingData),15000)
+#create the training set
+trainingSet <- rawTrainingData[trainingIndex,]
+#create the validation set to assess the expected out of sample error
+validationSet <- rawTrainingData[-trainingIndex,]
+# factor the classe variable
+trainingSet$classe <- as.factor(trainingSet$classe)
+validationSet$classe <- as.factor(validationSet$classe)
+#training options, cross validation 4 fold
+trainCtrl <- trainControl(method = "cv", number=4)
+#define the model using the sampled 15000 samples using random forest.
+fittedModel <- train(classe ~ .,trControl = trainCtrl,data = trainingSet,method="rf")
+#display the model details
+fittedModel
+#accuracy
+max(fittedModel$results$Accuracy)
+#get the final model from the model object 
+finalModel <- fittedModel$finalModel
+```
+
+
+## Predicting classe variable in test data  
+
+
+We will predict the classe variables on the test data (20 samples) and assign them to the answers vector that will be used to build files that will serve as input for the Course Project Submission part. 20 files each containing only one letter (A, B, C, D or E) will be created. The code below is taken from the corse assignment site.
+
+```{r predict, echo=TRUE}
+#create the vector with predictions for test samples.
+answers <- (as.character(predict(finalModel, newdata=rawTestData)))
+answers
+
+# this function is taken from the assignment site
+      pml_write_files = function(x){
+            n = length(x)
+            for(i in 1:n){
+                  filename = paste0("problem_id_",i,".txt")
+                  write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+            }
+      }
+
+#generate the 20 files
+pml_write_files(answers)
+
+```
+
+The generated model predicted correctly 20 of 20 values in the provided test data set. 
+
+## Prediction model considerations  
+
+Lets check how well the model works on the training/validation data set (19622 samples).  
+
+First the confusion matrix showing us the prediction capabilities on the training data set and the validation test set:
+
+
+```{r additionalInfo, echo=TRUE}
+#training data set
+confusionMatrix(trainingSet$classe,predict(finalModel, trainingSet))
+#validation data set
+confusionMatrix(validationSet$classe,predict(finalModel, validationSet))
+
+
+```
+
+It's clear that on the training set this model performed very well (Accuracy = 1). On the validation set the Accuracy was 0.9946. It could be a sign ov overfitting but overfitting hasn't been observed on the  assignment test data set, as the model predicted correctly 20 of 20 test samples. Therefore the expeced out of sample error is 1 - 0.9946 = 0.0054.
+
+Finally let's us plot the predicted vs actual data on the validation data set.
+
+```{r finalPlot, echo=TRUE, fig.width=10, fig.height=6}
+library(ggplot2)
+library(reshape2)
+
+data = data.frame(1:length(validationSet$classe), predict(finalModel,validationSet), validationSet$classe) 
+names(data) <- c("Sample", "Predicted Class", "Actual Class")
+data <- melt(data,id= c("Sample"))
+
+g <- ggplot(data, aes(x = Sample, y = value, shape = variable, color = variable))+
+geom_point() + scale_color_manual(values = c("Predicted Class" = "#ff00ff","Actual Class" = "#3399ff")) + 
+scale_shape_manual(values = c("Predicted Class" = 17, "Actual Class" = 16)) +
+  xlab("Sample number") + ylab("Predicted class/ Actual class") +
+  labs(title="Predicted vs fitted data on the validation data set")
+
+g
+```
+
+This ilustrates how well the random forest model performed on our assignemnt data. We used rather simple parameters, applying simple 4 fold cross validation still with very good results. In the second part of this assignment, we were able to correctly predict all 20 samples.
